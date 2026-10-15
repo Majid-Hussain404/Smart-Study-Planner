@@ -12,7 +12,7 @@ import {
   AuditLog,
 } from './types';
 
-const API_BASE = '/api';
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 export class ApiError extends Error {
   status: number;
@@ -33,16 +33,31 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-    credentials: 'include', // essential for HttpOnly session cookie
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+      credentials: 'include', // essential for HttpOnly session cookie
+    });
+  } catch (err: any) {
+    throw new ApiError('Unable to connect to backend server. Please verify the backend is running.', 0);
+  }
 
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new ApiError(data.message || data.error || 'Request failed', response.status, data);
+    const errorMsg =
+      data.message ||
+      data.error ||
+      (response.status === 404
+        ? 'Backend API route not found (404). Check backend server.'
+        : response.status === 401
+        ? 'Invalid email or password.'
+        : response.status === 403
+        ? 'Access forbidden.'
+        : `Request failed (HTTP ${response.status}).`);
+    throw new ApiError(errorMsg, response.status, data);
   }
 
   return data as T;
