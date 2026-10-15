@@ -94,7 +94,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-if (process.env.VERCEL !== '1') {
+if (!process.env.VERCEL) {
   app.listen(PORT, () => {
     console.log(`🚀 Smart Study Planner backend server listening on http://localhost:${PORT}`);
     console.log(`📡 Health Check URL: http://localhost:${PORT}/api/health`);
