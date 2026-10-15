@@ -130,3 +130,15 @@ export async function recordSuccessfulLogin(email: string): Promise<void> {
     WHERE email = ${normalizedEmail}
   `;
 }
+
+/**
+ * Manually unlocks an account and clears failed attempt history (Owner/Admin action)
+ */
+export async function unlockUser(email: string): Promise<void> {
+  const normalizedEmail = email.toLowerCase().trim();
+  await client`
+    UPDATE login_attempts
+    SET failed_count = 0, locked_until = NULL, updated_at = NOW()
+    WHERE email = ${normalizedEmail}
+  `;
+}

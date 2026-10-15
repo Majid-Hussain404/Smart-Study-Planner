@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { client } from '../db/index.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { unlockUser } from '../utils/lockout.js';
 
 export const adminRouter = Router();
 
@@ -60,10 +61,14 @@ adminRouter.get('/users', async (_req: Request, res: Response) => {
       u.learner_type,
       u.is_active,
       u.created_at,
-      COUNT(DISTINCT s.id)::int as active_sessions_count
+      COUNT(DISTINCT s.id)::int as active_sessions_count,
+      COALESCE(la.failed_count, 0)::int as failed_attempts,
+      la.locked_until,
+      CASE WHEN la.locked_until IS NOT NULL AND la.locked_until > NOW() THEN true ELSE false END as is_locked
     FROM users u
     LEFT JOIN sessions s ON s.user_id = u.id AND s.expires_at > NOW() AND s.is_revoked = false
-    GROUP BY u.id
+    LEFT JOIN login_attempts la ON la.email = u.email
+    GROUP BY u.id, la.failed_count, la.locked_until
     ORDER BY u.created_at DESC
     LIMIT 100
   `;
@@ -204,4 +209,93 @@ adminRouter.get('/audit-logs', async (_req: Request, res: Response) => {
     LIMIT 100
   `;
   return res.json({ logs });
+});
+
+// -----------------------------------------------------------------------------
+// POST /api/admin/users/:id/unlock (Unlock locked out student/admin account)
+// -----------------------------------------------------------------------------
+adminRouter.post('/users/:id/unlock', async (req: Request, res: Response) => {
+  const currentAdmin = req.user!;
+  const targetUserId = req.params.id;
+
+  const targetUsers = await client`
+    SELECT id, email, full_name FROM users WHERE id = ${targetUserId} LIMIT 1
+  `;
+
+  if (targetUsers.length === 0) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  const targetUser = targetUsers[0];
+
+  // Atomically unlock account in PostgreSQL
+  await unlockUser(targetUser.email);
+
+  // Write audit log
+  await client`
+    INSERT INTO audit_logs (admin_id, action, target_type, target_id, metadata, ip_address)
+    VALUES (
+      ${currentAdmin.id},
+      'lockout_cleared_by_admin',
+      'user',
+      ${targetUserId},
+      ${JSON.stringify({ targetEmail: targetUser.email, unlockedByRole: currentAdmin.role })},
+      ${req.ip || 'unknown'}
+    )
+  `;
+
+  return res.json({
+    success: true,
+    message: `Account lockout cleared for ${targetUser.email}.`,
+  });
+});
+
+// -----------------------------------------------------------------------------
+// GET /api/admin/system-health (Neon PostgreSQL Telemetry & System Diagnostics)
+// -----------------------------------------------------------------------------
+adminRouter.get('/system-health', async (_req: Request, res: Response) => {
+  const startTime = Date.now();
+
+  try {
+    const dbTest = await client`
+      SELECT 
+        current_database() as database_name,
+        NOW() as server_time,
+        version() as pg_version,
+        pg_database_size(current_database()) as db_bytes
+    `;
+    const latencyMs = Date.now() - startTime;
+
+    const tableCounts = await client`
+      SELECT 
+        (SELECT COUNT(*)::int FROM users) as total_users,
+        (SELECT COUNT(*)::int FROM subjects) as total_subjects,
+        (SELECT COUNT(*)::int FROM tasks) as total_tasks,
+        (SELECT COUNT(*)::int FROM flashcards) as total_flashcards,
+        (SELECT COUNT(*)::int FROM study_sessions) as total_study_sessions,
+        (SELECT COUNT(*)::int FROM audit_logs) as total_audit_logs,
+        (SELECT COUNT(*)::int FROM login_attempts WHERE locked_until > NOW()) as active_lockouts
+    `;
+
+    return res.json({
+      status: 'healthy',
+      connected: true,
+      latencyMs,
+      database: {
+        name: dbTest[0]?.database_name,
+        serverTime: dbTest[0]?.server_time,
+        version: dbTest[0]?.pg_version,
+        sizePretty: `${(Number(dbTest[0]?.db_bytes || 0) / (1024 * 1024)).toFixed(2)} MB`,
+        provider: 'Neon Serverless PostgreSQL (AWS us-east-2)',
+      },
+      counts: tableCounts[0],
+      serverUptimeSeconds: Math.floor(process.uptime()),
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      status: 'unhealthy',
+      connected: false,
+      error: err.message || String(err),
+    });
+  }
 });

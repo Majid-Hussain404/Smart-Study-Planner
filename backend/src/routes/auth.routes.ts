@@ -4,7 +4,7 @@ import { client } from '../db/index.js';
 import { hashPassword, verifyPassword } from '../utils/argon2.js';
 import { generateOpaqueToken, hashToken } from '../utils/token.js';
 import { sendVerificationEmail, sendPasswordResetEmail } from '../utils/mailer.js';
-import { checkLockout, recordFailedAttempt, recordSuccessfulLogin } from '../utils/lockout.js';
+import { checkLockout, recordFailedAttempt, recordSuccessfulLogin, unlockUser } from '../utils/lockout.js';
 import { authenticate, SESSION_COOKIE_NAME } from '../middleware/auth.js';
 import { authRateLimiter, passwordResetRateLimiter } from '../middleware/rateLimit.js';
 
@@ -34,6 +34,18 @@ const signupSchema = z.object({
 const loginSchema = z.object({
   email: z.string().email('Please enter a valid email address'),
   password: z.string().min(1, 'Password is required'),
+});
+
+const ownerLoginSchema = z.object({
+  email: z.string().email('Please enter a valid email address'),
+  password: z.string().min(1, 'Password is required'),
+});
+
+const ownerClaimSchema = z.object({
+  email: z.string().email('Please enter a valid email address'),
+  password: z.string().min(8, 'Password must be at least 8 characters long'),
+  fullName: z.string().min(2, 'Full name must be at least 2 characters'),
+  ownerSetupSecret: z.string().min(1, 'Owner setup secret key is required'),
 });
 
 const verifyEmailSchema = z.object({
@@ -268,6 +280,276 @@ authRouter.post('/login', authRateLimiter, async (req: Request, res: Response) =
     return res.status(500).json({
       error: 'InternalServerError',
       message: 'Failed to process login.',
+    });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// POST /api/auth/owner/login (Dedicated Owner Authentication)
+// -----------------------------------------------------------------------------
+authRouter.post('/owner/login', authRateLimiter, async (req: Request, res: Response) => {
+  const parseResult = ownerLoginSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({
+      error: 'ValidationError',
+      details: parseResult.error.flatten().fieldErrors,
+    });
+  }
+
+  const { email, password } = parseResult.data;
+  const normalizedEmail = email.toLowerCase().trim();
+  const clientIp = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
+
+  try {
+    // 1. Check account lockout
+    const lockout = await checkLockout(normalizedEmail);
+    if (lockout.isLocked) {
+      return res.status(423).json({
+        error: 'AccountLocked',
+        message: `Account locked for ${lockout.remainingSeconds} seconds due to failed attempts.`,
+        remainingSeconds: lockout.remainingSeconds,
+      });
+    }
+
+    // 2. Fetch user
+    const users = await client`
+      SELECT id, email, password_hash, full_name, role, is_email_verified, learner_type, daily_goal_minutes, is_active
+      FROM users
+      WHERE email = ${normalizedEmail}
+      LIMIT 1
+    `;
+
+    const user = users[0];
+
+    if (!user || !user.is_active) {
+      const failed = await recordFailedAttempt(normalizedEmail, clientIp);
+      return res.status(401).json({
+        error: 'InvalidCredentials',
+        message: 'Invalid owner credentials.',
+        attemptsRemaining: Math.max(0, 5 - failed.failedCount),
+      });
+    }
+
+    // 3. Verify user has the OWNER role
+    if (user.role !== 'owner') {
+      return res.status(403).json({
+        error: 'NotAnOwner',
+        message: 'This account does not have Platform Owner privileges. Please use student login, or claim platform ownership with your Owner Setup Key.',
+      });
+    }
+
+    // 4. Verify password
+    const isPasswordValid = await verifyPassword(user.password_hash, password);
+    if (!isPasswordValid) {
+      const failed = await recordFailedAttempt(normalizedEmail, clientIp);
+      return res.status(401).json({
+        error: 'InvalidCredentials',
+        message: 'Invalid owner email or password.',
+        attemptsRemaining: Math.max(0, 5 - failed.failedCount),
+      });
+    }
+
+    // 5. Success - Clear failed attempts
+    await recordSuccessfulLogin(normalizedEmail);
+
+    // 6. Generate Session
+    const { rawToken, tokenHash } = generateOpaqueToken();
+    const sessionExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const userAgent = req.headers['user-agent'] || null;
+
+    await client`
+      INSERT INTO sessions (
+        session_token_hash,
+        user_id,
+        expires_at,
+        ip_address,
+        user_agent
+      )
+      VALUES (
+        ${tokenHash},
+        ${user.id},
+        ${sessionExpiresAt.toISOString()},
+        ${clientIp},
+        ${userAgent}
+      )
+    `;
+
+    // 7. Write audit log
+    await client`
+      INSERT INTO audit_logs (admin_id, action, target_type, target_id, metadata, ip_address)
+      VALUES (
+        ${user.id},
+        'owner_login_web',
+        'session',
+        ${user.id},
+        ${JSON.stringify({ method: 'owner_portal', timestamp: new Date().toISOString() })},
+        ${clientIp}
+      )
+    `;
+
+    // 8. Set session cookie
+    res.cookie(SESSION_COOKIE_NAME, rawToken, getCookieOptions());
+
+    return res.json({
+      success: true,
+      message: 'Welcome back, Platform Owner!',
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.full_name,
+        role: user.role,
+        isEmailVerified: user.is_email_verified,
+        learnerType: user.learner_type,
+        dailyGoalMinutes: user.daily_goal_minutes,
+      },
+    });
+  } catch (error: any) {
+    console.error('Owner login error:', error);
+    return res.status(500).json({
+      error: 'InternalServerError',
+      message: 'Failed to process owner login.',
+    });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// POST /api/auth/owner/claim (Bootstrap / Claim Platform Owner from Web)
+// -----------------------------------------------------------------------------
+authRouter.post('/owner/claim', authRateLimiter, async (req: Request, res: Response) => {
+  const parseResult = ownerClaimSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({
+      error: 'ValidationError',
+      details: parseResult.error.flatten().fieldErrors,
+    });
+  }
+
+  const { email, password, fullName, ownerSetupSecret } = parseResult.data;
+  const normalizedEmail = email.toLowerCase().trim();
+  const clientIp = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
+
+  // 1. Verify owner secret from environment
+  const expectedSecret = process.env.OWNER_SETUP_SECRET;
+  if (!expectedSecret || ownerSetupSecret.trim() !== expectedSecret.trim()) {
+    return res.status(401).json({
+      error: 'InvalidSecret',
+      message: 'Invalid Owner Setup Key. Please verify OWNER_SETUP_SECRET in backend/.env.',
+    });
+  }
+
+  try {
+    // 2. Reassign any existing owner to admin if re-assigning
+    const existingOwners = await client`
+      SELECT id, email FROM users WHERE role = 'owner' LIMIT 1
+    `;
+
+    if (existingOwners && existingOwners.length > 0 && existingOwners[0].email !== normalizedEmail) {
+      await client`
+        UPDATE users SET role = 'admin', updated_at = NOW() WHERE id = ${existingOwners[0].id}
+      `;
+    }
+
+    // 3. Hash password
+    const passwordHash = await hashPassword(password);
+
+    // 4. Create or update owner user
+    const existingUser = await client`
+      SELECT id FROM users WHERE email = ${normalizedEmail} LIMIT 1
+    `;
+
+    let ownerUser: any;
+
+    if (existingUser && existingUser.length > 0) {
+      const updated = await client`
+        UPDATE users
+        SET role = 'owner',
+            password_hash = ${passwordHash},
+            full_name = ${fullName.trim()},
+            is_email_verified = true,
+            email_verified_at = NOW(),
+            is_active = true,
+            updated_at = NOW()
+        WHERE id = ${existingUser[0].id}
+        RETURNING id, email, full_name, role, is_email_verified, learner_type, daily_goal_minutes
+      `;
+      ownerUser = updated[0];
+    } else {
+      const inserted = await client`
+        INSERT INTO users (
+          email,
+          password_hash,
+          full_name,
+          role,
+          is_email_verified,
+          email_verified_at,
+          is_active,
+          learner_type
+        )
+        VALUES (
+          ${normalizedEmail},
+          ${passwordHash},
+          ${fullName.trim()},
+          'owner',
+          true,
+          NOW(),
+          true,
+          'self_directed'
+        )
+        RETURNING id, email, full_name, role, is_email_verified, learner_type, daily_goal_minutes
+      `;
+      ownerUser = inserted[0];
+    }
+
+    // 5. Clear any prior lockouts for this email
+    await unlockUser(normalizedEmail);
+
+    // 6. Write audit log
+    await client`
+      INSERT INTO audit_logs (admin_id, action, target_type, target_id, metadata, ip_address)
+      VALUES (
+        ${ownerUser.id},
+        'owner_claim_web',
+        'user',
+        ${ownerUser.id},
+        ${JSON.stringify({ method: 'web_portal', timestamp: new Date().toISOString() })},
+        ${clientIp}
+      )
+    `;
+
+    // 7. Generate session and set cookie
+    const { rawToken, tokenHash } = generateOpaqueToken();
+    const sessionExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const userAgent = req.headers['user-agent'] || null;
+
+    await client`
+      INSERT INTO sessions (
+        session_token_hash,
+        user_id,
+        expires_at,
+        ip_address,
+        user_agent
+      )
+      VALUES (
+        ${tokenHash},
+        ${ownerUser.id},
+        ${sessionExpiresAt.toISOString()},
+        ${clientIp},
+        ${userAgent}
+      )
+    `;
+
+    res.cookie(SESSION_COOKIE_NAME, rawToken, getCookieOptions());
+
+    return res.json({
+      success: true,
+      message: 'Platform ownership claimed successfully! Welcome, Owner.',
+      user: ownerUser,
+    });
+  } catch (error: any) {
+    console.error('Owner claim error:', error);
+    return res.status(500).json({
+      error: 'InternalServerError',
+      message: 'Failed to claim owner account.',
     });
   }
 });

@@ -90,6 +90,23 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ token }),
     }),
+
+  ownerLogin: (payload: { email: string; password: string }) =>
+    request<{ success: boolean; message: string; user: User }>('/auth/owner/login', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  ownerClaim: (payload: {
+    email: string;
+    password: string;
+    fullName: string;
+    ownerSetupSecret: string;
+  }) =>
+    request<{ success: boolean; message: string; user: User }>('/auth/owner/claim', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 };
 
 // -----------------------------------------------------------------------------
@@ -176,5 +193,10 @@ export const adminApi = {
       method: 'PATCH',
       body: JSON.stringify({ isActive }),
     }),
+  unlockUser: (id: string) =>
+    request<{ success: boolean; message: string }>(`/admin/users/${id}/unlock`, {
+      method: 'POST',
+    }),
+  getSystemHealth: () => request<any>('/admin/system-health'),
   getAuditLogs: () => request<{ logs: AuditLog[] }>('/admin/audit-logs'),
 };

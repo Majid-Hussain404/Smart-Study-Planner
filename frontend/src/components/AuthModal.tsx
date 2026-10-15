@@ -16,16 +16,34 @@ import {
   Award,
   Globe,
   Lightbulb,
+  Crown,
+  KeyRound,
+  Shield,
 } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: (user: User) => void;
+  initialTab?: 'login' | 'signup' | 'forgot' | 'owner';
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess }) => {
-  const [tab, setTab] = useState<'login' | 'signup' | 'forgot'>('login');
+export const AuthModal: React.FC<AuthModalProps> = ({
+  isOpen,
+  onClose,
+  onSuccess,
+  initialTab = 'login',
+}) => {
+  const [tab, setTab] = useState<'login' | 'signup' | 'forgot' | 'owner'>(initialTab);
+  const [ownerMode, setOwnerMode] = useState<'login' | 'claim'>('login');
+  const [ownerSecret, setOwnerSecret] = useState('');
+
+  // Sync initialTab when modal opens
+  useEffect(() => {
+    if (isOpen && initialTab) {
+      setTab(initialTab);
+    }
+  }, [isOpen, initialTab]);
 
   // Form fields
   const [email, setEmail] = useState('');
@@ -149,6 +167,66 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     }
   };
 
+  const handleOwnerLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (lockoutRemaining > 0) return;
+
+    setLoading(true);
+    setErrorMsg(null);
+    setAttemptsRemaining(null);
+
+    try {
+      const res = await authApi.ownerLogin({ email, password });
+      onSuccess(res.user);
+      onClose();
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        if (err.status === 423) {
+          const seconds = err.data?.remainingSeconds || 30;
+          setLockoutRemaining(seconds);
+          setErrorMsg(err.data?.message || `Account locked for ${seconds} seconds.`);
+        } else {
+          setErrorMsg(err.message);
+          if (err.data?.attemptsRemaining !== undefined) {
+            setAttemptsRemaining(err.data.attemptsRemaining);
+          }
+        }
+      } else {
+        setErrorMsg('Failed to sign in as owner. Please check credentials.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOwnerClaim = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setErrorMsg(null);
+
+    try {
+      const res = await authApi.ownerClaim({
+        email,
+        password,
+        fullName,
+        ownerSetupSecret: ownerSecret,
+      });
+      setSuccessMsg(res.message);
+      onSuccess(res.user);
+      setTimeout(() => {
+        onClose();
+      }, 1200);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        setErrorMsg(err.message || 'Owner claim failed');
+      } else {
+        setErrorMsg('Failed to claim owner account. Please check your setup key.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
       <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 max-h-[90vh] overflow-y-auto">
@@ -162,18 +240,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
         {/* Header */}
         <div className="text-center mb-6">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 mb-3">
-            <Sparkles className="w-6 h-6" />
+          <div
+            className={`inline-flex items-center justify-center w-12 h-12 rounded-xl mb-3 ${
+              tab === 'owner'
+                ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30 shadow-lg shadow-amber-500/10'
+                : 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
+            }`}
+          >
+            {tab === 'owner' ? <Crown className="w-6 h-6 text-amber-400" /> : <Sparkles className="w-6 h-6" />}
           </div>
           <h2 className="text-xl font-bold text-slate-100">
             {tab === 'login' && 'Welcome Back'}
             {tab === 'signup' && 'Create Your Study Account'}
             {tab === 'forgot' && 'Reset Password'}
+            {tab === 'owner' && 'Platform Owner Portal'}
           </h2>
           <p className="text-xs text-slate-400 mt-1">
             {tab === 'login' && 'Enter your credentials to access your personalized planner'}
             {tab === 'signup' && 'Join learners mastering subjects with Neon DB & smart spaced repetition'}
             {tab === 'forgot' && 'Enter your registered email address to receive reset instructions'}
+            {tab === 'owner' && 'Direct master access & platform governance for Smart Study Planner'}
           </p>
         </div>
 
@@ -209,6 +295,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
               }`}
             >
               Register
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTab('owner');
+                setErrorMsg(null);
+                setSuccessMsg(null);
+              }}
+              className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center justify-center space-x-1 ${
+                tab === 'owner'
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+                  : 'text-amber-400/80 hover:text-amber-300 hover:bg-amber-500/10'
+              }`}
+            >
+              <Crown className="w-3.5 h-3.5 text-amber-400" />
+              <span>Owner</span>
             </button>
           </div>
         )}
@@ -455,6 +557,179 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
               Back to Sign In
             </button>
           </form>
+        )}
+
+        {/* OWNER PORTAL FORM */}
+        {tab === 'owner' && (
+          <div className="space-y-4">
+            {/* Sub-mode selector */}
+            <div className="flex p-1 bg-slate-950 rounded-xl border border-amber-500/20 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setOwnerMode('login');
+                  setErrorMsg(null);
+                  setSuccessMsg(null);
+                }}
+                className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
+                  ownerMode === 'login'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Sign In as Owner
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOwnerMode('claim');
+                  setErrorMsg(null);
+                  setSuccessMsg(null);
+                }}
+                className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
+                  ownerMode === 'claim'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Claim / Setup Owner
+              </button>
+            </div>
+
+            {ownerMode === 'login' ? (
+              <form onSubmit={handleOwnerLogin} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-amber-300/90 mb-1">
+                    Owner Email Address
+                  </label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                    <input
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="owner@studyplanner.com"
+                      className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-amber-300/90 mb-1">
+                    Owner Password
+                  </label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                    <input
+                      type="password"
+                      required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••••••"
+                      className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading || lockoutRemaining > 0}
+                  className="w-full py-2.5 px-4 rounded-lg font-semibold text-sm text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center space-x-2"
+                >
+                  <Crown className="w-4 h-4" />
+                  <span>{loading ? 'Authenticating Owner...' : 'Access Owner Section'}</span>
+                </button>
+
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-300/80 leading-relaxed">
+                  👑 If you haven't bootstrapped an owner account yet, click <strong>"Claim / Setup Owner"</strong> above to register with your security key.
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleOwnerClaim} className="space-y-3.5">
+                <div>
+                  <label className="block text-xs font-medium text-amber-300/90 mb-1">
+                    Owner Full Name
+                  </label>
+                  <div className="relative">
+                    <UserIcon className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                    <input
+                      type="text"
+                      required
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      placeholder="e.g. Master Platform Owner"
+                      className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-amber-300/90 mb-1">
+                    Owner Email Address
+                  </label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                    <input
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="owner@studyplanner.com"
+                      className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-amber-300/90 mb-1">
+                    Master Password (min. 8 characters)
+                  </label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                    <input
+                      type="password"
+                      required
+                      minLength={8}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••••••"
+                      className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-amber-300/90 mb-1">
+                    Owner Setup Secret Key
+                  </label>
+                  <div className="relative">
+                    <KeyRound className="absolute left-3 top-2.5 w-4 h-4 text-amber-400" />
+                    <input
+                      type="password"
+                      required
+                      value={ownerSecret}
+                      onChange={(e) => setOwnerSecret(e.target.value)}
+                      placeholder="Enter OWNER_SETUP_SECRET"
+                      className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-amber-500/40 focus:border-amber-400 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+                    />
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Matches <code>OWNER_SETUP_SECRET</code> in your <code>backend/.env</code>.
+                  </p>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full py-2.5 px-4 rounded-lg font-semibold text-sm text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center space-x-2"
+                >
+                  <Crown className="w-4 h-4" />
+                  <span>{loading ? 'Claiming Ownership...' : 'Claim & Launch Owner Section'}</span>
+                </button>
+              </form>
+            )}
+          </div>
         )}
       </div>
     </div>

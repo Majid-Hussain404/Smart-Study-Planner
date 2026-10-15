@@ -8,6 +8,7 @@ import {
   FileText,
   BarChart2,
   Shield,
+  Crown,
   LogOut,
   Sparkles,
   LayoutDashboard,
@@ -18,6 +19,7 @@ interface NavbarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   onOpenAuth: () => void;
+  onOpenOwnerAuth?: () => void;
   onLogout: () => void;
 }
 
@@ -26,6 +28,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
   setActiveTab,
   onOpenAuth,
+  onOpenOwnerAuth,
   onLogout,
 }) => {
   const learnerLabels: Record<string, string> = {
@@ -47,8 +50,12 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'analytics', label: 'Analytics', icon: BarChart2 },
   ];
 
-  if (user && (user.role === 'admin' || user.role === 'owner')) {
-    navItems.push({ id: 'admin', label: 'Admin Panel', icon: Shield });
+  if (user) {
+    if (user.role === 'owner') {
+      navItems.push({ id: 'owner', label: '👑 Owner Section', icon: Crown });
+    } else if (user.role === 'admin') {
+      navItems.push({ id: 'admin', label: 'Admin Panel', icon: Shield });
+    }
   }
 
   return (
@@ -79,6 +86,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               {navItems.map((item) => {
                 const Icon = item.icon;
                 const isActive = activeTab === item.id;
+                const isOwnerTab = item.id === 'owner';
                 const isAdminTab = item.id === 'admin';
                 return (
                   <button
@@ -86,13 +94,17 @@ export const Navbar: React.FC<NavbarProps> = ({
                     onClick={() => setActiveTab(item.id)}
                     className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                       isActive
-                        ? isAdminTab
-                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 shadow-sm'
+                        ? isOwnerTab
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm shadow-amber-500/10'
+                          : isAdminTab
+                          ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30 shadow-sm'
                           : 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 shadow-sm'
+                        : isOwnerTab
+                        ? 'text-amber-400/80 hover:text-amber-300 hover:bg-amber-500/10 font-semibold'
                         : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
                     }`}
                   >
-                    <Icon className="w-4 h-4" />
+                    <Icon className={`w-4 h-4 ${isOwnerTab ? 'text-amber-400' : ''}`} />
                     <span>{item.label}</span>
                   </button>
                 );
@@ -111,8 +123,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                       {learnerLabels[user.learnerType] || 'Student'}
                     </span>
                     {user.role === 'owner' && (
-                      <span className="px-1.5 py-0.2 text-[10px] uppercase font-bold rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                        Owner
+                      <span className="px-1.5 py-0.2 text-[10px] uppercase font-bold rounded bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm shadow-amber-500/20 flex items-center space-x-1">
+                        <Crown className="w-2.5 h-2.5" />
+                        <span>Owner</span>
                       </span>
                     )}
                     {user.role === 'admin' && (
@@ -132,12 +145,22 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </button>
               </div>
             ) : (
-              <button
-                onClick={onOpenAuth}
-                className="px-4 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-medium text-sm shadow-md shadow-indigo-600/20 transition-all hover:scale-[1.02]"
-              >
-                Sign In / Register
-              </button>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={onOpenOwnerAuth || onOpenAuth}
+                  className="hidden sm:flex items-center space-x-1 px-3 py-2 rounded-lg border border-amber-500/30 hover:border-amber-500/60 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-semibold text-xs transition-all hover:scale-105 shadow-sm shadow-amber-500/10"
+                >
+                  <Crown className="w-3.5 h-3.5 text-amber-400" />
+                  <span>👑 Owner Portal</span>
+                </button>
+
+                <button
+                  onClick={onOpenAuth}
+                  className="px-4 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-medium text-sm shadow-md shadow-indigo-600/20 transition-all hover:scale-[1.02]"
+                >
+                  Sign In / Register
+                </button>
+              </div>
             )}
           </div>
         </div>

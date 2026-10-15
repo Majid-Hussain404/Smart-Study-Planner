@@ -11,6 +11,7 @@ import { QuizzesView } from './components/QuizzesView';
 import { NotesView } from './components/NotesView';
 import { AnalyticsView } from './components/AnalyticsView';
 import { AdminPanel } from './components/AdminPanel';
+import { OwnerSection } from './components/OwnerSection';
 import {
   Sparkles,
   BookOpen,
@@ -19,12 +20,14 @@ import {
   Layers,
   ShieldCheck,
   Zap,
+  Crown,
 } from 'lucide-react';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [authModalTab, setAuthModalTab] = useState<'login' | 'signup' | 'forgot' | 'owner'>('login');
   const [loadingInitial, setLoadingInitial] = useState<boolean>(true);
 
   // App data states
@@ -113,7 +116,14 @@ export default function App() {
         user={user}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
-        onOpenAuth={() => setShowAuthModal(true)}
+        onOpenAuth={() => {
+          setAuthModalTab('login');
+          setShowAuthModal(true);
+        }}
+        onOpenOwnerAuth={() => {
+          setAuthModalTab('owner');
+          setShowAuthModal(true);
+        }}
         onLogout={handleLogout}
       />
 
@@ -177,6 +187,10 @@ export default function App() {
 
             {activeTab === 'analytics' && <AnalyticsView analytics={analytics} />}
 
+            {activeTab === 'owner' && user.role === 'owner' && (
+              <OwnerSection currentUser={user} onRefreshData={loadStudyData} />
+            )}
+
             {activeTab === 'admin' && (user.role === 'admin' || user.role === 'owner') && (
               <AdminPanel currentUser={user} />
             )}
@@ -203,17 +217,34 @@ export default function App() {
 
               <div className="pt-4 flex flex-col sm:flex-row items-center justify-center gap-3">
                 <button
-                  onClick={() => setShowAuthModal(true)}
+                  onClick={() => {
+                    setAuthModalTab('signup');
+                    setShowAuthModal(true);
+                  }}
                   className="w-full sm:w-auto px-8 py-3.5 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 hover:from-indigo-500 hover:to-purple-500 shadow-xl shadow-indigo-600/30 transition-all hover:scale-105"
                 >
                   Start Planning Free
                 </button>
 
                 <button
-                  onClick={() => setShowAuthModal(true)}
+                  onClick={() => {
+                    setAuthModalTab('login');
+                    setShowAuthModal(true);
+                  }}
                   className="w-full sm:w-auto px-6 py-3.5 rounded-xl font-semibold text-sm text-slate-300 hover:text-white bg-slate-900 border border-slate-800 hover:border-slate-700 transition-colors"
                 >
                   Sign In to Account
+                </button>
+
+                <button
+                  onClick={() => {
+                    setAuthModalTab('owner');
+                    setShowAuthModal(true);
+                  }}
+                  className="w-full sm:w-auto px-5 py-3.5 rounded-xl font-bold text-sm text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 shadow-lg shadow-amber-500/10 transition-all flex items-center justify-center space-x-2 hover:scale-105"
+                >
+                  <Crown className="w-4 h-4 text-amber-400" />
+                  <span>👑 Owner Portal</span>
                 </button>
               </div>
             </div>
@@ -262,10 +293,14 @@ export default function App() {
       {/* Authentication Modal */}
       <AuthModal
         isOpen={showAuthModal}
+        initialTab={authModalTab}
         onClose={() => setShowAuthModal(false)}
         onSuccess={(newUser) => {
           setUser(newUser);
           setShowAuthModal(false);
+          if (newUser.role === 'owner') {
+            setActiveTab('owner');
+          }
         }}
       />
     </div>
