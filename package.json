@@ -1,0 +1,25 @@
+{
+  "name": "smart-study-planner",
+  "version": "1.0.0",
+  "description": "Smart Study Planner — Full Stack App with Neon PostgreSQL, Drizzle ORM, Express & React",
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "db:generate": "npm --prefix backend run db:generate",
+    "db:migrate": "npm --prefix backend run db:migrate",
+    "db:push": "npm --prefix backend run db:push",
+    "db:studio": "npm --prefix backend run db:studio"
+  },
+  "keywords": [
+    "study-planner",
+    "neon",
+    "postgresql",
+    "drizzle",
+    "react",
+    "express"
+  ],
+  "author": "",
+  "license": "ISC"
+}
